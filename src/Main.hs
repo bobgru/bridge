@@ -1,7 +1,10 @@
 {-# LANGUAGE RecordWildCards #-}
 
 module Main where
+import Data.List (intercalate, sort)
 import Data.Maybe
+import Data.Monoid ((<>))
+import System.Random
 
 main :: IO ()
 main = do
@@ -32,6 +35,33 @@ data Number
   
 data Card = Card { cSuit :: Suit, cNumber :: Number }
   deriving (Ord, Eq, Show)
+
+formatSuit :: Suit -> String
+formatSuit Spade   = "S"
+formatSuit Heart   = "H"
+formatSuit Diamond = "D"
+formatSuit Club    = "C"
+
+formatNumber :: Number -> String
+formatNumber Ace   = " +A"
+formatNumber King  = " +K"
+formatNumber Queen = " +Q"
+formatNumber Jack  = " +J"
+formatNumber Ten   = "+10"
+formatNumber Nine  = "  9"
+formatNumber Eight = "  8"
+formatNumber Seven = "  7"
+formatNumber Six   = "  6"
+formatNumber Five  = "  5"
+formatNumber Four  = "  4"
+formatNumber Three = "  3"
+formatNumber Two   = "  2"
+
+formatCard :: Card -> String
+formatCard (Card s n) = formatNumber n <> formatSuit s
+
+formatCards :: [Card] -> String
+formatCards = intercalate " " . map formatCard
 
 rank :: Card -> Int
 rank (Card s n) = 13 * fromEnum s + fromEnum n
@@ -85,6 +115,11 @@ data Trick = Trick
   , tWinner :: Maybe Player }
   deriving (Eq, Show)
 
+formatTrick :: Trick -> String
+formatTrick t = intercalate "  " $ map fmt [North, East, South, West]
+  where fmt p = formatPlayer p <> ":" <> maybe " ---" formatCard c
+         where c = getPlayerCardInTrick p t
+
 -- | State of trick at beginning of a round of play.
 emptyTrick :: Trick
 emptyTrick = Trick Nothing Nothing Nothing Nothing Nothing Nothing
@@ -134,14 +169,24 @@ sortedDeck :: Deck
 sortedDeck = Deck cs
   where cs = [ Card s n | s <- [Club .. Spade], n <- [Two .. Ace]]
 
-shuffle :: (Monad m) => Deck -> m Deck
-shuffle = undefined
+shuffle :: Deck -> IO Deck
+shuffle d = do
+  let cs = dkCards d
+      n  = length cs
+  cs' <- permute cs 
+  return $ d { dkCards = cs' }
 
 cut :: (Monad m) => Deck -> m (Deck, Deck)
 cut = undefined
 
+shuffledDeck :: IO Deck
+shuffledDeck = shuffle sortedDeck
+
 removeCardFromDeck :: Card -> Deck -> Deck
 removeCardFromDeck c (Deck cs) = Deck $ filter (/= c) cs
+
+formatDeck :: Deck -> String
+formatDeck = formatCards . sort . dkCards
 
 -- | A Deal is the state of cards held by all players.
 -- The player hold fewer cards as the game progresses,
@@ -174,6 +219,9 @@ deal dk = deal' dk emptyHands
               }
         deal' dk _ = error $ "Invalid deck: " ++ show dk
 
+newDeal :: IO Deal
+newDeal = shuffledDeck >>= return . deal
+
 getPlayerHand :: Player -> Deal -> Deck
 getPlayerHand North = dlNorth
 getPlayerHand East  = dlEast
@@ -186,12 +234,30 @@ setPlayerHand East  dl dk = dl { dlEast  = dk }
 setPlayerHand South dl dk = dl { dlSouth = dk }
 setPlayerHand West  dl dk = dl { dlWest  = dk }
 
+formatPlayer :: Player -> String
+formatPlayer North = "N"
+formatPlayer East  = "E"
+formatPlayer South = "S"
+formatPlayer West  = "W"
+
+formatDeal :: Deal -> String
+formatDeal d = fmt North <> fmt East <> fmt South <> fmt West
+  where fmt p = formatPlayer p <> ": " <> formatDeck (getPlayerHand p d) <> "\n"
+
 data Bid = Bid
   { bNumber :: Int          -- tricks to win
   , bSuit  :: Suit          -- TODO how is this to be used?
   , bTrump :: Maybe Suit    -- trump suit, if any
   , bDoubled :: Maybe Int   -- number times doubled, if any
   } deriving Show
+
+lowestBid :: Bid
+lowestBid = Bid 2 Club (Just Club) Nothing
+
+formatBid :: Bid -> String
+formatBid Bid{..} = show bNumber <> fmtSuit <> fmtDoubled
+  where fmtSuit    = maybe "NT" formatSuit bTrump
+        fmtDoubled = maybe "" ((" x" <>) . show) bDoubled
 
 markTrickWinner :: Maybe Suit -> Trick -> Trick
 markTrickWinner trump t@Trick{..}
@@ -271,7 +337,7 @@ play c g
       error $ "All cards have been played"
   | not (validCardToPlay (gNextPlayer g) c g) =
       error $ "Invalid card to play"
-  | otherwise  = g { gNextPlayer   = p'
+  | otherwise  = g { gNextPlayer   = p''
                    , gDeal         = d'
                    , gTricks       = ts'
                    , gCurrentTrick = t''
@@ -290,10 +356,11 @@ play c g
       p' = nextPlayer p
       t' = addCardToTrick p c t
 
-      (t'', ts') =
+      (t'', ts', p'') =
         if completeTrick t'
-        then let tw = markTrickWinner tr t' in (tw, tw:ts)
-        else (t', ts)
+        then let tw = markTrickWinner tr t'
+             in (emptyTrick, tw:ts, fromJust (tWinner tw))
+        else (t', ts, p')
 
 
 getPlayerTricks :: Player -> Game -> [Trick]
@@ -301,4 +368,47 @@ getPlayerTricks p Game{..} = filter (isPlayerTrick p) ts
   where
     ts = filter completeTrick gTricks
 
+rand :: (Int, Int) -> IO Int
+rand (lo, hi) = getStdRandom (randomR (lo, hi))
 
+permute :: [a] -> IO [a]
+permute []  = return []
+permute [x] = return [x]
+permute xs = do
+    i   <- rand (0, length xs - 1)
+    xs' <- permute (take i xs ++ drop (i + 1) xs)
+    return ((xs!!i) : xs')
+
+
+{-
+
+Sample session in stack ghci:
+
+*Main Data.List> d0 <- newDeal
+*Main Data.List> putStrLn $ formatDeal d0
+N:   2C   4C   5C +10C   4D   5D   6D   7D +10D  +KD  +KH   2S   4S
+E:  +JC  +KC  +AC  +JD   3H   9H  +JH  +AH   3S   6S   8S  +JS  +KS
+S:   3C   9C   2D   8D   9D  +QD   5H   8H  +QH   5S   9S +10S  +QS
+W:   6C   7C   8C  +QC   3D  +AD   2H   4H   6H   7H +10H   7S  +AS
+
+*Main Data.List> let g0 = initialGame lowestBid East d0
+*Main Data.List> let g1 = play (Card Spade Queen) g0
+*Main Data.List> putStrLn $ formatDeal (gDeal g1)
+N:   2C   4C   5C +10C   4D   5D   6D   7D +10D  +KD  +KH   2S   4S
+E:  +JC  +KC  +AC  +JD   3H   9H  +JH  +AH   3S   6S   8S  +JS  +KS
+S:   3C   9C   2D   8D   9D  +QD   5H   8H  +QH   5S   9S +10S
+W:   6C   7C   8C  +QC   3D  +AD   2H   4H   6H   7H +10H   7S  +AS
+
+*Main Data.List> let g2 = play (Card Spade Ace) g1
+*Main Data.List> let g3 = play (Card Spade Two) g2
+*Main Data.List> putStrLn $ formatTrick (gCurrentTrick g3)
+N:  2S  E: ---  S: +QS  W: +AS
+*Main Data.List> let g4 = play (Card Spade Three) g3
+*Main Data.List> putStrLn $ formatTrick (gCurrentTrick g4)
+N: ---  E: ---  S: ---  W: ---
+*Main Data.List> gTricks g4
+[Trick {tNorth = Just (Card {cSuit = Spade, cNumber = Two}), tEast = Just (Card {cSuit = Spade, cNumber = Three}), tSouth = Just (Card {cSuit = Spade, cNumber = Queen}), tWest = Just (Card {cSuit = Spade, cNumber = Ace}), tLead = Just South, tWinner = Just West}]
+*Main Data.List> gNextPlayer g4
+West
+
+-}
